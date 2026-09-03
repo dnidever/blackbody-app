@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.colors import qualitative
-from scipy.constants import c, h, k
+from scipy.constants import c, h, k, sigma
 
 
 st.set_page_config(page_title="Blackbody Explorer", page_icon="☀️", layout="wide")
@@ -34,16 +34,15 @@ def parse_temperatures(raw):
 DELTA_WAVELENGTH = 1.0  # Angstrom
 
 
-def make_text_export(wavelength, curves, temperatures, areas):
+def make_text_export(wavelength, curves, temperatures, results):
     out = io.StringIO()
     out.write("# Blackbody Explorer export\n")
     out.write("# B_lambda [W m^-2 sr^-1 Angstrom^-1]\n")
     out.write("# temperatures_K = " + ", ".join(f"{t:g}" for t in temperatures) + "\n")
-    for row in areas:
+    for row in results:
         out.write(
             f"# T={row['temperature']:g} K: lambda_peak={row['peak']:.7g} A, "
-            f"integral_{wavelength[0]:g}_to_{wavelength[-1]:g}_A="
-            f"{row['area']:.7g} W m^-2 sr^-1\n"
+            f"total_flux={row['total_flux']:.7g} W m^-2\n"
         )
     out.write("# wavelength_A " + " ".join(f"B_lambda_{t:g}K" for t in temperatures) + "\n")
     np.savetxt(out, np.column_stack([wavelength, *curves]), fmt="%.8e")
@@ -63,13 +62,40 @@ with st.sidebar:
     )
     log_x = st.checkbox("Logarithmic wavelength axis")
     log_y = st.checkbox("Logarithmic radiance axis", value=False)
-    auto_y = st.checkbox("Automatic radiance range", value=True)
-    if not auto_y:
-        y_min = st.number_input("Minimum radiance", min_value=0.0, value=0.0, format="%.3e")
+    set_y_range = st.checkbox("Set Y-axis range")
+    if set_y_range:
         y_max = st.number_input("Maximum radiance", min_value=0.0, value=1.0e4, format="%.3e")
+        y_min = st.number_input("Minimum radiance", min_value=0.0, value=0.0, format="%.3e")
     st.header("Annotations")
     show_peaks = st.checkbox("Show peaks", value=True)
-    show_area = st.checkbox("Show area under each curve")
+    calculate_flux = st.checkbox("Calculate total flux (area under curve)")
+    st.header("Fake filters")
+    number_of_filters = st.number_input(
+        "Number of top-hat filters", min_value=0, max_value=6, value=0, step=1
+    )
+    filters = []
+    filter_defaults = [
+        ("Blue", 3500.0, 4500.0),
+        ("Visual", 5000.0, 6000.0),
+        ("Red", 6500.0, 8000.0),
+        ("Near-IR", 10000.0, 15000.0),
+        ("Filter 5", 20000.0, 25000.0),
+        ("Filter 6", 30000.0, 35000.0),
+    ]
+    for filter_number in range(int(number_of_filters)):
+        default_name, default_min, default_max = filter_defaults[filter_number]
+        filter_name = st.text_input(
+            f"Filter {filter_number + 1} name", default_name, key=f"filter_name_{filter_number}"
+        )
+        filter_min, filter_max = st.slider(
+            f"{filter_name} wavelength range (Å)",
+            1.0,
+            100000.0,
+            (default_min, default_max),
+            step=100.0,
+            key=f"filter_range_{filter_number}",
+        )
+        filters.append((filter_name, filter_min, filter_max))
 
 try:
     temperatures = parse_temperatures(temperature_text)
@@ -85,19 +111,18 @@ wavelength = np.arange(x_min, x_max + 0.5 * DELTA_WAVELENGTH, DELTA_WAVELENGTH)
 
 fig = go.Figure()
 curves = []
-area_rows = []
+results = []
 
 for curve_number, temperature in enumerate(temperatures):
     color = qualitative.Plotly[curve_number % len(qualitative.Plotly)]
     radiance = planck_radiance(wavelength, temperature)
     curves.append(radiance)
-    displayed_area = np.trapz(radiance, wavelength)
     peak_angstrom = 2.897771955e7 / temperature
-    area_rows.append(
+    results.append(
         {
             "temperature": temperature,
             "peak": peak_angstrom,
-            "area": displayed_area,
+            "total_flux": sigma * temperature**4,
             "color": color,
         }
     )
@@ -115,6 +140,13 @@ for curve_number, temperature in enumerate(temperatures):
         )
     )
     if show_peaks and x_min <= peak_angstrom <= x_max:
+        fig.add_vline(
+            x=peak_angstrom,
+            line_dash="dash",
+            line_color=color,
+            line_width=1.5,
+            opacity=0.75,
+        )
         peak_radiance = planck_radiance(np.array([peak_angstrom]), temperature)[0]
         fig.add_trace(
             go.Scatter(
@@ -124,6 +156,20 @@ for curve_number, temperature in enumerate(temperatures):
                 hovertemplate="Peak λ = %{x:.6g} Å<br>Bλ = %{y:.6g} W m⁻² sr⁻¹ Å⁻¹<extra></extra>",
             )
         )
+
+filter_colors = qualitative.Set2
+for filter_number, (filter_name, filter_min, filter_max) in enumerate(filters):
+    fig.add_vrect(
+        x0=filter_min,
+        x1=filter_max,
+        fillcolor=filter_colors[filter_number % len(filter_colors)],
+        opacity=0.18,
+        line_width=1.5,
+        line_dash="dot",
+        layer="below",
+        annotation_text=filter_name,
+        annotation_position="top left",
+    )
 
 fig.update_layout(
     xaxis_title="Wavelength (Å)",
@@ -136,7 +182,7 @@ fig.update_layout(
     margin=dict(l=70, r=30, t=30, b=70),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
 )
-if not auto_y:
+if set_y_range:
     if y_max <= y_min or (log_y and y_min <= 0):
         st.error("Choose a valid Y range (and use a positive minimum for a log axis).")
         st.stop()
@@ -149,16 +195,16 @@ st.plotly_chart(
 )
 st.caption("Hover over a curve to see the wavelength and radiance. Use the camera button in the plot toolbar to save a PNG.")
 
-if show_area:
-    st.markdown(f"**Area from {wavelength[0]:g} to {wavelength[-1]:g} Å**")
-    for row in area_rows:
+if calculate_flux:
+    st.markdown(r"**Total surface flux, $F=\pi\int_0^\infty B_\lambda\,d\lambda=\sigma T^4$**")
+    for row in results:
         st.markdown(
             f"<span style='color:{row['color']}; font-size:1.15rem'>●</span> "
-            f"<strong>{row['temperature']:g} K:</strong> {row['area']:.6g} W m⁻² sr⁻¹",
+            f"<strong>{row['temperature']:g} K:</strong> {row['total_flux']:.6g} W m⁻²",
             unsafe_allow_html=True,
         )
 
-text_export = make_text_export(wavelength, curves, temperatures, area_rows)
+text_export = make_text_export(wavelength, curves, temperatures, results)
 html_export = fig.to_html(full_html=True, include_plotlyjs=True)
 download_1, download_2 = st.columns(2)
 with download_1:
