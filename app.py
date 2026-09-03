@@ -1,10 +1,10 @@
 import io
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from scipy.constants import c, h, k, sigma
+from plotly.colors import qualitative
+from scipy.constants import c, h, k
 
 
 st.set_page_config(page_title="Blackbody Explorer", page_icon="☀️", layout="wide")
@@ -31,16 +31,19 @@ def parse_temperatures(raw):
     return values
 
 
+DELTA_WAVELENGTH = 1.0  # Angstrom
+
+
 def make_text_export(wavelength, curves, temperatures, areas):
     out = io.StringIO()
     out.write("# Blackbody Explorer export\n")
     out.write("# F_lambda = pi B_lambda [W m^-2 Angstrom^-1]\n")
     out.write("# temperatures_K = " + ", ".join(f"{t:g}" for t in temperatures) + "\n")
-    for row in areas.itertuples(index=False):
+    for row in areas:
         out.write(
-            f"# T={row.Temperature_K:g} K: lambda_peak={row.Peak_Angstrom:.7g} A, "
-            f"displayed_integral={row.Displayed_flux_W_m2:.7g} W m^-2, "
-            f"bolometric_flux={row.Bolometric_flux_W_m2:.7g} W m^-2\n"
+            f"# T={row['temperature']:g} K: lambda_peak={row['peak']:.7g} A, "
+            f"integral_{wavelength[0]:g}_to_{wavelength[-1]:g}_A="
+            f"{row['area']:.7g} W m^-2\n"
         )
     out.write("# wavelength_A " + " ".join(f"F_lambda_{t:g}K" for t in temperatures) + "\n")
     np.savetxt(out, np.column_stack([wavelength, *curves]), fmt="%.8e")
@@ -64,7 +67,6 @@ with st.sidebar:
     if not auto_y:
         y_min = st.number_input("Minimum flux", min_value=0.0, value=0.0, format="%.3e")
         y_max = st.number_input("Maximum flux", min_value=0.0, value=1.0e4, format="%.3e")
-    points = st.select_slider("Sampling", options=[500, 1000, 2000, 5000, 10000], value=2000)
     st.header("Annotations")
     show_peaks = st.checkbox("Show peaks", value=True)
     show_area = st.checkbox("Show area under each curve")
@@ -79,27 +81,24 @@ if x_min >= x_max:
     st.error("The maximum wavelength must be larger than the minimum wavelength.")
     st.stop()
 
-if log_x:
-    wavelength = np.geomspace(x_min, x_max, points)
-else:
-    wavelength = np.linspace(x_min, x_max, points)
+wavelength = np.arange(x_min, x_max + 0.5 * DELTA_WAVELENGTH, DELTA_WAVELENGTH)
 
 fig = go.Figure()
 curves = []
 area_rows = []
 
-for temperature in temperatures:
+for curve_number, temperature in enumerate(temperatures):
+    color = qualitative.Plotly[curve_number % len(qualitative.Plotly)]
     flux = planck_surface_flux(wavelength, temperature)
     curves.append(flux)
-    displayed_area = np.trapezoid(flux, wavelength)
+    displayed_area = np.trapz(flux, wavelength)
     peak_angstrom = 2.897771955e7 / temperature
     area_rows.append(
         {
-            "Temperature_K": temperature,
-            "Peak_Angstrom": peak_angstrom,
-            "Displayed_flux_W_m2": displayed_area,
-            "Bolometric_flux_W_m2": sigma * temperature**4,
-            "Displayed_fraction": displayed_area / (sigma * temperature**4),
+            "temperature": temperature,
+            "peak": peak_angstrom,
+            "area": displayed_area,
+            "color": color,
         }
     )
     fig.add_trace(
@@ -108,7 +107,7 @@ for temperature in temperatures:
             y=flux,
             mode="lines",
             name=f"{temperature:g} K",
-            fill="tozeroy" if show_area else None,
+            line=dict(color=color),
             hovertemplate=(
                 "λ = %{x:.6g} Å<br>Fλ = %{y:.6g} W m⁻² Å⁻¹"
                 + f"<br>T = {temperature:g} K<extra></extra>"
@@ -120,7 +119,7 @@ for temperature in temperatures:
         fig.add_trace(
             go.Scatter(
                 x=[peak_angstrom], y=[peak_flux], mode="markers",
-                marker=dict(size=10, symbol="diamond"),
+                marker=dict(size=10, symbol="diamond", color=color),
                 name=f"Peak: {temperature:g} K", showlegend=False,
                 hovertemplate="Peak λ = %{x:.6g} Å<br>Fλ = %{y:.6g}<extra></extra>",
             )
@@ -150,18 +149,16 @@ st.plotly_chart(
 )
 st.caption("Hover over a curve to see the wavelength and flux. Use the camera button in the plot toolbar to save a PNG.")
 
-areas = pd.DataFrame(area_rows)
 if show_area:
-    shown = areas.rename(columns={
-        "Temperature_K": "Temperature (K)",
-        "Peak_Angstrom": "Peak wavelength (Å)",
-        "Displayed_flux_W_m2": "Area in displayed range (W m⁻²)",
-        "Bolometric_flux_W_m2": "Total area σT⁴ (W m⁻²)",
-        "Displayed_fraction": "Fraction displayed",
-    })
-    st.dataframe(shown.style.format({col: "{:.6g}" for col in shown.columns}), hide_index=True, use_container_width=True)
+    st.markdown(f"**Area from {wavelength[0]:g} to {wavelength[-1]:g} Å**")
+    for row in area_rows:
+        st.markdown(
+            f"<span style='color:{row['color']}; font-size:1.15rem'>●</span> "
+            f"<strong>{row['temperature']:g} K:</strong> {row['area']:.6g} W m⁻²",
+            unsafe_allow_html=True,
+        )
 
-text_export = make_text_export(wavelength, curves, temperatures, areas)
+text_export = make_text_export(wavelength, curves, temperatures, area_rows)
 html_export = fig.to_html(full_html=True, include_plotlyjs=True)
 download_1, download_2 = st.columns(2)
 with download_1:
