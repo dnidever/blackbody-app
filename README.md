@@ -1,6 +1,7 @@
 # Blackbody Explorer
 
-An interactive Streamlit app for plotting and comparing blackbody spectra in an astronomy class.
+An interactive Streamlit app for plotting and comparing the Planck spectral
+radiance, B_lambda, in an astronomy class.
 
 ## Run it
 
