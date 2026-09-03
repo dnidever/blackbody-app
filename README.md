@@ -17,5 +17,7 @@ The plot toolbar saves a PNG with its camera button. The buttons below the plot 
 
 Spectra are evaluated on a constant 1 Å wavelength grid. Selecting “Calculate
 total flux (area under curve)” prints the Stefan–Boltzmann flux for each curve.
-Peak markers include color-matched dashed wavelength lines. Students can also
-add named top-hat filters, displayed as shaded wavelength ranges on the graph.
+Peak markers include color-matched dashed lines from each peak down to the
+X-axis. Students can also add named synthetic top-hat filters, displayed as
+shaded wavelength ranges on the graph. The app reports the integrated flux in
+every filter for every temperature alongside the graph.

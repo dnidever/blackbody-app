@@ -34,7 +34,7 @@ def parse_temperatures(raw):
 DELTA_WAVELENGTH = 1.0  # Angstrom
 
 
-def make_text_export(wavelength, curves, temperatures, results):
+def make_text_export(wavelength, curves, temperatures, results, filter_results):
     out = io.StringIO()
     out.write("# Blackbody Explorer export\n")
     out.write("# B_lambda [W m^-2 sr^-1 Angstrom^-1]\n")
@@ -44,6 +44,13 @@ def make_text_export(wavelength, curves, temperatures, results):
             f"# T={row['temperature']:g} K: lambda_peak={row['peak']:.7g} A, "
             f"total_flux={row['total_flux']:.7g} W m^-2\n"
         )
+    for filter_result in filter_results:
+        for temperature, integrated_flux in filter_result["fluxes"]:
+            out.write(
+                f"# filter={filter_result['name']} "
+                f"range={filter_result['minimum']:g}-{filter_result['maximum']:g} A "
+                f"T={temperature:g} K integrated_flux={integrated_flux:.7g} W m^-2\n"
+            )
     out.write("# wavelength_A " + " ".join(f"B_lambda_{t:g}K" for t in temperatures) + "\n")
     np.savetxt(out, np.column_stack([wavelength, *curves]), fmt="%.8e")
     return out.getvalue()
@@ -58,7 +65,7 @@ with st.sidebar:
     )
     st.header("Axes")
     x_min, x_max = st.slider(
-        "Wavelength range (Å)", 1.0, 100000.0, (1000.0, 30000.0), step=100.0
+        "Wavelength range (Å)", 1000.0, 30000.0, (1000.0, 30000.0), step=100.0
     )
     log_x = st.checkbox("Logarithmic wavelength axis")
     log_y = st.checkbox("Logarithmic radiance axis", value=False)
@@ -67,9 +74,9 @@ with st.sidebar:
         y_max = st.number_input("Maximum radiance", min_value=0.0, value=1.0e4, format="%.3e")
         y_min = st.number_input("Minimum radiance", min_value=0.0, value=0.0, format="%.3e")
     st.header("Annotations")
-    show_peaks = st.checkbox("Show peaks", value=True)
+    show_peaks = st.checkbox("Show peaks", value=False)
     calculate_flux = st.checkbox("Calculate total flux (area under curve)")
-    st.header("Fake filters")
+    st.header("Synthetic Filters")
     number_of_filters = st.number_input(
         "Number of top-hat filters", min_value=0, max_value=6, value=0, step=1
     )
@@ -80,7 +87,7 @@ with st.sidebar:
         ("Red", 6500.0, 8000.0),
         ("Near-IR", 10000.0, 15000.0),
         ("Filter 5", 20000.0, 25000.0),
-        ("Filter 6", 30000.0, 35000.0),
+        ("Filter 6", 26000.0, 30000.0),
     ]
     for filter_number in range(int(number_of_filters)):
         default_name, default_min, default_max = filter_defaults[filter_number]
@@ -89,8 +96,8 @@ with st.sidebar:
         )
         filter_min, filter_max = st.slider(
             f"{filter_name} wavelength range (Å)",
-            1.0,
-            100000.0,
+            1000.0,
+            30000.0,
             (default_min, default_max),
             step=100.0,
             key=f"filter_range_{filter_number}",
@@ -140,14 +147,21 @@ for curve_number, temperature in enumerate(temperatures):
         )
     )
     if show_peaks and x_min <= peak_angstrom <= x_max:
-        fig.add_vline(
-            x=peak_angstrom,
-            line_dash="dash",
-            line_color=color,
-            line_width=1.5,
+        peak_radiance = planck_radiance(np.array([peak_angstrom]), temperature)[0]
+        if log_y:
+            positive_radiance = radiance[radiance > 0]
+            peak_line_bottom = y_min if set_y_range else positive_radiance.min()
+        else:
+            peak_line_bottom = 0.0
+        fig.add_shape(
+            type="line",
+            x0=peak_angstrom,
+            x1=peak_angstrom,
+            y0=peak_line_bottom,
+            y1=peak_radiance,
+            line=dict(color=color, width=1.5, dash="dash"),
             opacity=0.75,
         )
-        peak_radiance = planck_radiance(np.array([peak_angstrom]), temperature)[0]
         fig.add_trace(
             go.Scatter(
                 x=[peak_angstrom], y=[peak_radiance], mode="markers",
@@ -158,7 +172,25 @@ for curve_number, temperature in enumerate(temperatures):
         )
 
 filter_colors = qualitative.Set2
+filter_results = []
 for filter_number, (filter_name, filter_min, filter_max) in enumerate(filters):
+    filter_wavelength = np.arange(
+        filter_min, filter_max + 0.5 * DELTA_WAVELENGTH, DELTA_WAVELENGTH
+    )
+    filter_fluxes = []
+    for temperature in temperatures:
+        filter_radiance = planck_radiance(filter_wavelength, temperature)
+        integrated_flux = np.pi * np.trapz(filter_radiance, filter_wavelength)
+        filter_fluxes.append((temperature, integrated_flux))
+    filter_results.append(
+        {
+            "name": filter_name,
+            "minimum": filter_min,
+            "maximum": filter_max,
+            "color": filter_colors[filter_number % len(filter_colors)],
+            "fluxes": filter_fluxes,
+        }
+    )
     fig.add_vrect(
         x0=filter_min,
         x1=filter_max,
@@ -182,18 +214,35 @@ fig.update_layout(
     margin=dict(l=70, r=30, t=30, b=70),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
 )
+fig.update_xaxes(tickformat=",.0f", separatethousands=True)
 if set_y_range:
     if y_max <= y_min or (log_y and y_min <= 0):
         st.error("Choose a valid Y range (and use a positive minimum for a log axis).")
         st.stop()
     fig.update_yaxes(range=[np.log10(y_min), np.log10(y_max)] if log_y else [y_min, y_max])
 
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-    config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "filename": "blackbody_spectra", "scale": 2}},
-)
-st.caption("Hover over a curve to see the wavelength and radiance. Use the camera button in the plot toolbar to save a PNG.")
+plot_column, filter_column = st.columns([3.2, 1.1]) if filters else (st.container(), None)
+with plot_column:
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "filename": "blackbody_spectra", "scale": 2}},
+    )
+    st.caption("Hover over a curve to see the wavelength and radiance. Use the camera button in the plot toolbar to save a PNG.")
+
+if filter_column is not None:
+    with filter_column:
+        st.subheader("Integrated filter flux")
+        st.caption("Top-hat filters: π ∫ Bλ dλ (W m⁻²)")
+        for filter_result in filter_results:
+            st.markdown(
+                f"<span style='color:{filter_result['color']}; font-size:1.15rem'>■</span> "
+                f"<strong>{filter_result['name']}</strong><br>"
+                f"{filter_result['minimum']:,.0f}–{filter_result['maximum']:,.0f} Å",
+                unsafe_allow_html=True,
+            )
+            for temperature, integrated_flux in filter_result["fluxes"]:
+                st.write(f"{temperature:g} K: {integrated_flux:.4g} W m⁻²")
 
 if calculate_flux:
     st.markdown(r"**Total surface flux, $F=\pi\int_0^\infty B_\lambda\,d\lambda=\sigma T^4$**")
@@ -204,7 +253,7 @@ if calculate_flux:
             unsafe_allow_html=True,
         )
 
-text_export = make_text_export(wavelength, curves, temperatures, results)
+text_export = make_text_export(wavelength, curves, temperatures, results, filter_results)
 html_export = fig.to_html(full_html=True, include_plotlyjs=True)
 download_1, download_2 = st.columns(2)
 with download_1:
